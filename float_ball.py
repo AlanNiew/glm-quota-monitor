@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QWidget,
     QMenu,
-    QGraphicsDropShadowEffect,
 )
 
 # ── 浅色配色（Apple system colors 风格）──
@@ -25,7 +24,6 @@ _INNER_DARK = QColor("#F2F2F7")       # 内圆渐变边缘（微灰）
 _INNER_BORDER = QColor("#E5E5EA")     # 内圆描边
 _TEXT = QColor("#1C1C1E")             # 百分比数字（近黑）
 _TEXT_DIM = QColor("#8E8E93")         # % 符号（中灰）
-_SHADOW = QColor(0, 0, 0, 45)         # 投影（半透明黑）
 
 
 def _arc_color(pct):
@@ -64,9 +62,13 @@ class FloatBall:
 
     def _run(self):
         """悬浮球主循环（子线程；QApplication 全生命周期在此线程内）。"""
-        self._app = QApplication.instance() or QApplication(sys.argv[:1])
-        _BallWidget(self._monitor)
-        self._app.exec()
+        try:
+            self._app = QApplication.instance() or QApplication(sys.argv[:1])
+            _BallWidget(self._monitor)
+            self._app.exec()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
 
 class _BallWidget(QWidget):
@@ -84,13 +86,6 @@ class _BallWidget(QWidget):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(self.SIZE, self.SIZE)
-
-        # 柔和投影（QGraphicsDropShadowEffect 依 widget alpha 通道生成）
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(18)
-        shadow.setColor(_SHADOW)
-        shadow.setOffset(0, 4)
-        self.setGraphicsEffect(shadow)
 
         # 初始位置：屏幕右下角，避开任务栏
         screen = QApplication.primaryScreen().geometry()
@@ -117,9 +112,24 @@ class _BallWidget(QWidget):
         rw = 7  # 环线宽
         rect = QRectF(m, m, S - 2 * m, S - 2 * m)
 
+        self._draw_shadow(painter, S)
         self._draw_rings(painter, rect, rw, ratio, pct)
         self._draw_inner(painter, S, m, rw, state, pct)
         painter.end()
+
+    def _draw_shadow(self, painter, S):
+        """手动画柔和投影（径向渐变黑→透明）。
+
+        QGraphicsDropShadowEffect 与 WA_TranslucentBackground 冲突会导致
+        整个透明 widget 被渲染为完全不可见，故改用手绘径向渐变模拟阴影。
+        """
+        grad = QRadialGradient(QPointF(S / 2, S / 2 + 3), S * 0.5)
+        grad.setColorAt(0.0, QColor(0, 0, 0, 50))
+        grad.setColorAt(0.6, QColor(0, 0, 0, 20))
+        grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QRectF(0, 3, S, S))
 
     def _draw_rings(self, painter, rect, rw, ratio, pct):
         """绘制轨道环 + 进度弧。"""
