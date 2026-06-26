@@ -26,8 +26,8 @@ class Monitor:
         self.client = QuotaClient(self.config)
         self.storage = Storage(self.config.db_path)
         self.alerter = Alerter(self.config)
-        self.tray = TrayApp(self)
-        self.dashboard = Dashboard(self)
+        self.tray = TrayApp(self) if self.config.tray else None
+        self.dashboard = Dashboard(self) if self.config.dashboard else None
         self.float_ball = FloatBall(self) if self.config.float_ball else None
 
         self.lock = threading.Lock()
@@ -73,32 +73,43 @@ class Monitor:
                 self.refresh_now.clear()
 
     def run(self):
-        """启动监控。
+        """启动监控，按配置开关分配线程。
 
-        有悬浮球时 QApplication 占用主线程（Qt 要求），dashboard 移到子线程；
-        无悬浮球时 dashboard 在主线程（原逻辑）。
+        线程规则：
+        - 有悬浮球 → QApplication 占主线程（Qt 要求）；有仪表盘则仪表盘移子线程
+        - 无悬浮球有仪表盘 → 仪表盘占主线程
+        - 两者都无 → 主线程 wait(stop_event)，仅托盘 + 后台拉取
         """
         threading.Thread(target=self._fetch_loop, daemon=True).start()
-        try:
-            self.tray.start()
-        except Exception as e:
-            print(f"托盘启动失败（不影响终端监控）: {e}")
+
+        if self.tray is not None:
+            try:
+                self.tray.start()
+            except Exception as e:
+                print(f"托盘启动失败（不影响其他功能）: {e}")
+
         if self.float_ball is not None:
-            threading.Thread(
-                target=self.dashboard.run, args=(self.stop_event,), daemon=True
-            ).start()
-            try:
-                self.float_ball.run_main()
-            finally:
-                self.tray.stop()
-                self.float_ball.stop()
-                print("已退出监控。")
+            if self.dashboard is not None:
+                threading.Thread(
+                    target=self.dashboard.run, args=(self.stop_event,), daemon=True
+                ).start()
+            self._run_blocking(self.float_ball.run_main)
+        elif self.dashboard is not None:
+            self._run_blocking(lambda: self.dashboard.run(self.stop_event))
         else:
-            try:
-                self.dashboard.run(self.stop_event)
-            finally:
+            print("监控运行中（仅托盘 + 后台拉取），通过托盘菜单或 Ctrl+C 退出。")
+            self._run_blocking(self.stop_event.wait)
+
+    def _run_blocking(self, target):
+        """执行阻塞函数，退出时统一清理托盘和悬浮球。"""
+        try:
+            target()
+        finally:
+            if self.tray is not None:
                 self.tray.stop()
-                print("已退出监控。")
+            if self.float_ball is not None:
+                self.float_ball.stop()
+            print("已退出监控。")
 
 
 if __name__ == "__main__":
