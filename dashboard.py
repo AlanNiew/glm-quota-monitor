@@ -124,81 +124,69 @@ class Dashboard:
         except Exception:
             return Text("  趋势图渲染失败", style="dim red")
 
-    def build(self) -> Layout:
-        """构建整页布局。"""
-        root = Layout()
-        root.split_column(
-            Layout(name="header", size=3),
-            Layout(name="body"),
-            Layout(name="footer", size=3),
-        )
-        root["body"].split_row(
-            Layout(name="quota"),
-            Layout(name="trend"),
-        )
-
+    def _build_header(self) -> Panel:
+        """头部面板：标题 + 套餐等级 + 上次/下次刷新时间。"""
         state = self.monitor.state
         last = self.monitor.last_fetch
-
-        # —— 头部 ——
-        now = datetime.now()
         if last:
-            elapsed = int((now - last).total_seconds())
+            elapsed = int((datetime.now() - last).total_seconds())
             remain = max(0, self.monitor.config.refresh_interval - elapsed)
             status_time = f"上次刷新 {last.strftime('%H:%M:%S')}   下次 {remain}s"
         else:
             status_time = "等待首次刷新..."
         level = f"[{state.level}]" if state and state.level else ""
-        root["header"].update(
-            Panel(
-                Text(f"● GLM 用量监控  {level}    {status_time}", style="bold cyan"),
-                style="cyan",
-            )
+        return Panel(
+            Text(f"● GLM 用量监控  {level}    {status_time}", style="bold cyan"),
+            style="cyan",
         )
 
-        # —— 左：配额 ——
+    def _build_quota_panel(self) -> Panel:
+        """左侧配额面板：双进度条 + 绝对值 + ETA + 模型拆分。"""
+        state = self.monitor.state
         qtable = Table.grid(padding=(0, 2))
         qtable.add_column(style="bold")
         qtable.add_column()
 
         if not state:
             qtable.add_row("", "正在获取数据...")
-        elif not state.ok:
+            return Panel(qtable, title="配额", border_style="blue")
+
+        if not state.ok:
             fails = self.monitor.consecutive_failures
             hint = ""
             if fails >= 2:
-                hint = "\n[yellow]! 凭证可能已过期，请 F12 重新抓包，更新 .env 的 GLM_AUTHORIZATION[/yellow]"
+                hint = (
+                    "\n[yellow]! 凭证可能已过期，请 F12 重新抓包，"
+                    "更新 .env 的 GLM_AUTHORIZATION[/yellow]"
+                )
             qtable.add_row(
                 "状态",
                 f"[red]请求失败（连续 {fails} 次）[/red]\n[dim]{state.error}[/dim]{hint}",
             )
-        else:
-            # Token 用量配额
-            qtable.add_row("Token 用量", self._bar(state.tokens_pct))
-            qtable.add_row("  重置于", self._fmt_reset(state.tokens_next_reset))
-            qtable.add_row("", "")
-            # 调用次数配额
-            qtable.add_row("调用次数", self._bar(state.time_pct))
-            cur = state.time_current if state.time_current is not None else "—"
-            tot = state.time_total if state.time_total is not None else "—"
-            rem = state.time_remaining if state.time_remaining is not None else "—"
-            qtable.add_row("  进度", f"{cur} / {tot}   剩余 {rem}")
-            qtable.add_row("  预计耗尽", self._fmt_eta(self._eta_seconds(state)))
-            qtable.add_row("  重置于", self._fmt_reset(state.time_next_reset))
-            # 模型拆分
-            if state.time_details:
-                detail = " · ".join(
-                    f"{d.get('modelCode')} {d.get('usage')}" for d in state.time_details
-                )
-                qtable.add_row("  按模型", detail)
-        root["quota"].update(Panel(qtable, title="配额", border_style="blue"))
+            return Panel(qtable, title="配额", border_style="blue")
 
-        # —— 右：趋势 ——
-        root["trend"].update(
-            Panel(self._render_trend(), title=f"趋势 [{self.window}]", border_style="magenta")
-        )
+        # Token 用量配额
+        qtable.add_row("Token 用量", self._bar(state.tokens_pct))
+        qtable.add_row("  重置于", self._fmt_reset(state.tokens_next_reset))
+        qtable.add_row("", "")
+        # 调用次数配额
+        qtable.add_row("调用次数", self._bar(state.time_pct))
+        cur = state.time_current if state.time_current is not None else "—"
+        tot = state.time_total if state.time_total is not None else "—"
+        rem = state.time_remaining if state.time_remaining is not None else "—"
+        qtable.add_row("  进度", f"{cur} / {tot}   剩余 {rem}")
+        qtable.add_row("  预计耗尽", self._fmt_eta(self._eta_seconds(state)))
+        qtable.add_row("  重置于", self._fmt_reset(state.time_next_reset))
+        # 按模型拆分
+        if state.time_details:
+            detail = " · ".join(
+                f"{d.get('modelCode')} {d.get('usage')}" for d in state.time_details
+            )
+            qtable.add_row("  按模型", detail)
+        return Panel(qtable, title="配额", border_style="blue")
 
-        # —— 底部 ——
+    def _build_footer(self) -> Panel:
+        """底部面板：阈值 + 趋势窗口快捷键提示。"""
         w1, w2, w3 = (
             self.monitor.config.warn1,
             self.monitor.config.warn2,
@@ -209,16 +197,30 @@ class Dashboard:
             f"[{'bold' if i == cur_key else 'dim'}][{i}] {WINDOWS[i-1]}[/]"
             for i in (1, 2, 3)
         )
-        root["footer"].update(
-            Panel(
-                Text(
-                    f"阈值 {w1}/{w2}/{w3}%   通知已开启   |   趋势窗口: {win_hint}   [q] 退出",
-                    style="dim",
-                ),
+        return Panel(
+            Text(
+                f"阈值 {w1}/{w2}/{w3}%   通知已开启   |   趋势窗口: {win_hint}   [q] 退出",
                 style="dim",
-            )
+            ),
+            style="dim",
         )
 
+    def build(self) -> Layout:
+        """构建整页布局：头部 / [配额 | 趋势] / 底部。"""
+        root = Layout()
+        root.split_column(
+            Layout(name="header", size=3),
+            Layout(name="body"),
+            Layout(name="footer", size=3),
+        )
+        root["body"].split_row(Layout(name="quota"), Layout(name="trend"))
+
+        root["header"].update(self._build_header())
+        root["quota"].update(self._build_quota_panel())
+        root["trend"].update(
+            Panel(self._render_trend(), title=f"趋势 [{self.window}]", border_style="magenta")
+        )
+        root["footer"].update(self._build_footer())
         return root
 
     def run(self, stop_event):
@@ -234,6 +236,9 @@ class Dashboard:
             live.console.set_window_title(self._title_text())
             live.update(self.build())
 
+    # 按键 → 趋势窗口映射（_key_loop 用字典分发替代 if/elif 链）
+    _KEY_WINDOWS = {b"1": "6h", b"2": "24h", b"3": "7d"}
+
     def _key_loop(self, stop_event):
         """Windows 下非阻塞读取按键。"""
         try:
@@ -241,15 +246,13 @@ class Dashboard:
         except ImportError:
             return
         while not stop_event.is_set():
-            if msvcrt.kbhit():
-                ch = msvcrt.getch()
-                if ch == b"1":
-                    self.set_window("6h")
-                elif ch == b"2":
-                    self.set_window("24h")
-                elif ch == b"3":
-                    self.set_window("7d")
-                elif ch in (b"q", b"Q"):
-                    stop_event.set()
-                    break
-            time.sleep(0.1)
+            if not msvcrt.kbhit():
+                time.sleep(0.1)
+                continue
+            ch = msvcrt.getch()
+            window = self._KEY_WINDOWS.get(ch)
+            if window:
+                self.set_window(window)
+            elif ch in (b"q", b"Q"):
+                stop_event.set()
+                break
