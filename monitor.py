@@ -62,7 +62,8 @@ class Monitor:
             self.consecutive_failures += 1
             if self.consecutive_failures == self.AUTH_FAIL_THRESHOLD:
                 self.alerter.notify_auth_expired(usage.error)
-        self.tray.update(usage)
+        if self.tray is not None:
+            self.tray.update(usage)
 
     def _fetch_loop(self):
         """定时拉取：启动即拉一次，之后按间隔刷新（可被立即刷新提前唤醒）。"""
