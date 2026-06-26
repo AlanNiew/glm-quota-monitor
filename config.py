@@ -19,6 +19,7 @@ class Config:
     warn2: float              # 警告阈值（%）
     warn3: float              # 严重阈值（%）
     db_path: str              # SQLite 数据库路径
+    float_ball: bool          # 是否显示 Token 悬浮球
 
 
 def load_config() -> Config:
@@ -33,4 +34,5 @@ def load_config() -> Config:
         warn2=float(os.getenv("WARN_2", "90")),
         warn3=float(os.getenv("WARN_3", "95")),
         db_path=os.getenv("DB_PATH", "usage.db"),
+        float_ball=os.getenv("FLOAT_BALL", "1").strip().lower() in ("1", "true", "yes", "on"),
     )

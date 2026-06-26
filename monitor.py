@@ -9,6 +9,7 @@ from storage import Storage
 from alerter import Alerter
 from tray import TrayApp
 from dashboard import Dashboard
+from float_ball import FloatBall
 
 
 class Monitor:
@@ -27,6 +28,7 @@ class Monitor:
         self.alerter = Alerter(self.config)
         self.tray = TrayApp(self)
         self.dashboard = Dashboard(self)
+        self.float_ball = FloatBall(self) if self.config.float_ball else None
 
         self.lock = threading.Lock()
         self.state = None              # 最近一次 UsageData
@@ -77,10 +79,14 @@ class Monitor:
             self.tray.start()
         except Exception as e:
             print(f"托盘启动失败（不影响终端监控）: {e}")
+        if self.float_ball is not None:
+            self.float_ball.start()
         try:
             self.dashboard.run(self.stop_event)
         finally:
             self.tray.stop()
+            if self.float_ball is not None:
+                self.float_ball.stop()
             print("已退出监控。")
 
 
