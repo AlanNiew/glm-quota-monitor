@@ -1,7 +1,10 @@
-"""Token 消耗量悬浮球：无边框置顶小窗口，圆球显示 Token 用量百分比。
+"""Token 消耗量悬浮球：无边框置顶小窗口，环形进度条显示 Token 用量百分比。
 
 独立子线程运行 tkinter mainloop，通过 after 定时轮询 monitor.state 更新显示，
 确保跨线程安全（update/stop 投递到 Tk 线程执行）。
+
+渲染层次（由外到内）：外圈暗色轨道环 → 彩色进度弧（顶部起顺时针）
+→ 深色内圆载体 → 百分比数字 + % 符号。
 
 交互：左键拖动移动位置，右键弹出退出菜单。
 """
@@ -108,28 +111,45 @@ class FloatBall:
         self._root.geometry(f"+{x}+{y}")
 
     def _refresh(self):
-        """每秒读取最新状态并重绘球体。"""
+        """每秒读取最新状态并重绘环形进度条。"""
         state = self.monitor.state
 
         if state is None:
-            bg, fg = "#6E6E6E", "#FFFFFF"
-            num = "—"
+            arc_color, fg, num, ratio = "#6E6E6E", "#FFFFFF", "—", 0.0
         elif not state.ok:
-            bg, fg = "#495057", "#FFFFFF"
-            num = "!"
+            arc_color, fg, num, ratio = "#495057", "#FFFFFF", "!", 0.0
         else:
-            bg, fg = _ball_color(state.tokens_pct)
+            arc_color, fg = _ball_color(state.tokens_pct)
             pct = state.tokens_pct
             num = str(int(round(pct))) if pct is not None else "—"
+            ratio = max(0.0, min(1.0, (pct or 0) / 100.0))
 
         c = self._canvas
         c.delete("all")
-        c.create_oval(2, 2, self.SIZE - 2, self.SIZE - 2,
-                      fill=bg, outline="#1A1A1A", width=2)
-        c.create_text(self.SIZE / 2, self.SIZE / 2 - 4,
-                      text=num, fill=fg, font=("Segoe UI", 17, "bold"))
-        c.create_text(self.SIZE / 2, self.SIZE / 2 + 16,
-                      text="%", fill=fg, font=("Segoe UI", 9))
+
+        S = self.SIZE          # 总边长
+        cx = S / 2             # 中心坐标
+        margin = 5             # 环与窗口边缘的间距
+        ring_w = 6             # 进度环线宽
+        ring_r = S / 2 - margin  # 环半径（椭圆外接矩形半边长）
+
+        # 1. 轨道环（暗色底环，create_oval 画粗描边空心圆）
+        c.create_oval(margin, margin, S - margin, S - margin,
+                      outline="#2A2A2A", width=ring_w, fill="")
+        # 2. 进度弧（彩色，从 12 点钟方向顺时针填充 ratio 比例）
+        if ratio > 0:
+            c.create_arc(margin, margin, S - margin, S - margin,
+                         start=90, extent=-360 * ratio, style="arc",
+                         width=ring_w, outline=arc_color)
+        # 3. 内圆载体（深色实心圆，盖住弧线内部，给文字一个底色）
+        ir = ring_r - ring_w / 2  # 内圆半径 = 环内缘
+        c.create_oval(cx - ir, cx - ir, cx + ir, cx + ir,
+                      fill="#1A1A1A", outline="#333333", width=1)
+        # 4. 百分比数字 + % 符号
+        c.create_text(cx, cx - 4, text=num, fill=fg,
+                      font=("Segoe UI", 14, "bold"))
+        c.create_text(cx, cx + 13, text="%", fill=fg,
+                      font=("Segoe UI", 7))
 
         try:
             self._root.after(1000, self._refresh)
