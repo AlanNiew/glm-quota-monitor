@@ -1,46 +1,56 @@
-"""Token 消耗量悬浮球：无边框置顶小窗口，环形进度条显示 Token 用量百分比。
+"""Token 消耗量悬浮球（PySide6）：环形进度条，浅色风格，抗锯齿渲染。
 
-独立子线程运行 tkinter mainloop，通过 after 定时轮询 monitor.state 更新显示，
-确保跨线程安全（update/stop 投递到 Tk 线程执行）。
+QPainter + Antialiasing 绘制四层：柔和投影 → 暗色轨道环 → 彩色进度弧
+→ 白色渐变内圆 → 深色百分比文字。独立子线程运行 QApplication.exec()，
+QTimer 每秒触发重绘读取最新状态。
 
-渲染层次（由外到内）：外圈暗色轨道环 → 彩色进度弧（顶部起顺时针）
-→ 深色内圆载体 → 百分比数字 + % 符号。
-
-交互：左键拖动移动位置，右键弹出退出菜单。
+交互：左键拖动移动，右键弹出退出菜单。
 """
+import sys
 import threading
-import tkinter as tk
 
-# 透明键色：窗口背景用此色 + -transparentcolor 使圆球外区域完全透明。
-# 选 magenta 因与球体颜色（红/橙/黄/绿/灰）无冲突。
-_TRANSPARENT = "#FF00FF"
+from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRadialGradient, QBrush
+from PySide6.QtWidgets import (
+    QApplication,
+    QWidget,
+    QMenu,
+    QGraphicsDropShadowEffect,
+)
+
+# ── 浅色配色（Apple system colors 风格）──
+_TRACK = QColor("#E5E5EA")            # 轨道环（浅灰）
+_INNER_LIGHT = QColor("#FFFFFF")      # 内圆渐变中心（纯白）
+_INNER_DARK = QColor("#F2F2F7")       # 内圆渐变边缘（微灰）
+_INNER_BORDER = QColor("#E5E5EA")     # 内圆描边
+_TEXT = QColor("#1C1C1E")             # 百分比数字（近黑）
+_TEXT_DIM = QColor("#8E8E93")         # % 符号（中灰）
+_SHADOW = QColor(0, 0, 0, 45)         # 投影（半透明黑）
 
 
-def _ball_color(pct):
-    """按百分比返回（球色, 文字色），与托盘图标逻辑一致。"""
+def _arc_color(pct):
+    """按百分比返回进度弧颜色（柔和饱和度）。"""
     if pct is None:
-        return "#6E6E6E", "#FFFFFF"
+        return QColor("#C7C7CC")  # 无数据
     if pct >= 95:
-        return "#DC3545", "#FFFFFF"
+        return QColor("#FF3B30")  # 红
     if pct >= 90:
-        return "#FD7E1E", "#FFFFFF"
+        return QColor("#FF9500")  # 橙
     if pct >= 80:
-        return "#FFC107", "#1E1E1E"
-    return "#28A745", "#FFFFFF"
+        return QColor("#FFCC00")  # 黄
+    return QColor("#34C759")      # 绿
 
 
 class FloatBall:
-    """Token 悬浮球。"""
+    """悬浮球管理器：子线程启动 QApplication，持有 _BallWidget。
 
-    SIZE = 64  # 球直径（像素）
+    对外接口与 tkinter 版完全一致（start / stop），monitor.py 无需改动。
+    """
 
     def __init__(self, monitor):
-        self.monitor = monitor
-        self._root = None
-        self._canvas = None
+        self._monitor = monitor
+        self._app = None
         self._thread = None
-        self._drag_x = 0
-        self._drag_y = 0
 
     def start(self):
         """在子线程启动悬浮球（非阻塞）。"""
@@ -48,110 +58,129 @@ class FloatBall:
         self._thread.start()
 
     def stop(self):
-        """关闭悬浮球（可跨线程调用，通过 after 投递到 Tk 线程）。"""
-        if self._root is not None:
-            try:
-                self._root.after(0, self._root.destroy)
-            except Exception:
-                pass
-
-    # —— 以下方法均在 Tk 线程内执行 ——
+        """关闭悬浮球（线程安全，可跨线程调用）。"""
+        if self._app is not None:
+            self._app.quit()
 
     def _run(self):
-        """悬浮球主循环（子线程；tkinter 全生命周期在此线程内）。"""
-        try:
-            self._root = tk.Tk()
-        except Exception:
-            return  # tkinter 不可用，静默跳过
+        """悬浮球主循环（子线程；QApplication 全生命周期在此线程内）。"""
+        self._app = QApplication.instance() or QApplication(sys.argv[:1])
+        _BallWidget(self._monitor)
+        self._app.exec()
 
-        root = self._root
-        root.overrideredirect(True)  # 无边框
-        root.attributes("-topmost", True)  # 置顶
 
-        # 尝试透明背景；非 Windows 退化为深色方块
-        bg = _TRANSPARENT
-        try:
-            root.attributes("-transparentcolor", _TRANSPARENT)
-        except Exception:
-            bg = "#1A1A1A"
+class _BallWidget(QWidget):
+    """悬浮球窗口：无边框、透明背景、置顶、环形进度条。"""
+
+    SIZE = 72
+
+    def __init__(self, monitor):
+        super().__init__()
+        self._monitor = monitor
+        self._drag_offset = None
+
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(self.SIZE, self.SIZE)
+
+        # 柔和投影（QGraphicsDropShadowEffect 依 widget alpha 通道生成）
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(18)
+        shadow.setColor(_SHADOW)
+        shadow.setOffset(0, 4)
+        self.setGraphicsEffect(shadow)
 
         # 初始位置：屏幕右下角，避开任务栏
-        root.update_idletasks()
-        sw = root.winfo_screenwidth()
-        sh = root.winfo_screenheight()
-        root.geometry(f"{self.SIZE}x{self.SIZE}+{sw - self.SIZE - 20}+{sh - self.SIZE - 80}")
+        screen = QApplication.primaryScreen().geometry()
+        self.move(screen.width() - self.SIZE - 24, screen.height() - self.SIZE - 80)
 
-        self._canvas = tk.Canvas(
-            root, width=self.SIZE, height=self.SIZE,
-            bg=bg, highlightthickness=0,
-        )
-        self._canvas.pack()
+        # 每秒触发重绘
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.update)
+        self._timer.start(1000)
 
-        menu = tk.Menu(root, tearoff=0)
-        menu.add_command(label="退出悬浮球", command=self.stop)
-        self._menu = menu
+        self.show()
 
-        # 左键拖动 / 右键菜单
-        self._canvas.bind("<ButtonPress-1>", self._on_press)
-        self._canvas.bind("<B1-Motion>", self._on_drag)
-        self._canvas.bind("<ButtonPress-3>", lambda e: self._menu.tk_popup(e.x_root, e.y_root))
+    def paintEvent(self, _event):
+        """绘制环形进度条：轨道环 → 进度弧 → 内圆 → 文字。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
 
-        self._refresh()
-        root.mainloop()
+        state = self._monitor.state
+        pct = state.tokens_pct if (state and state.ok) else None
+        ratio = max(0.0, min(1.0, (pct or 0) / 100.0)) if pct is not None else 0.0
 
-    def _on_press(self, event):
-        """记录拖动起点（鼠标相对于 Canvas 的坐标）。"""
-        self._drag_x = event.x
-        self._drag_y = event.y
+        S = self.SIZE
+        m = 6   # 环与窗口边缘间距
+        rw = 7  # 环线宽
+        rect = QRectF(m, m, S - 2 * m, S - 2 * m)
 
-    def _on_drag(self, event):
-        """随鼠标移动窗口。"""
-        x = self._root.winfo_x() + (event.x - self._drag_x)
-        y = self._root.winfo_y() + (event.y - self._drag_y)
-        self._root.geometry(f"+{x}+{y}")
+        self._draw_rings(painter, rect, rw, ratio, pct)
+        self._draw_inner(painter, S, m, rw, state, pct)
+        painter.end()
 
-    def _refresh(self):
-        """每秒读取最新状态并重绘环形进度条。"""
-        state = self.monitor.state
+    def _draw_rings(self, painter, rect, rw, ratio, pct):
+        """绘制轨道环 + 进度弧。"""
+        pen = QPen(_TRACK, rw)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawArc(rect, 0, 360 * 16)  # Qt 角度 = 实际角度 × 16
 
-        if state is None:
-            arc_color, fg, num, ratio = "#6E6E6E", "#FFFFFF", "—", 0.0
-        elif not state.ok:
-            arc_color, fg, num, ratio = "#495057", "#FFFFFF", "!", 0.0
-        else:
-            arc_color, fg = _ball_color(state.tokens_pct)
-            pct = state.tokens_pct
-            num = str(int(round(pct))) if pct is not None else "—"
-            ratio = max(0.0, min(1.0, (pct or 0) / 100.0))
-
-        c = self._canvas
-        c.delete("all")
-
-        S = self.SIZE          # 总边长
-        cx = S / 2             # 中心坐标
-        margin = 5             # 环与窗口边缘的间距
-        ring_w = 6             # 进度环线宽
-        ring_r = S / 2 - margin  # 环半径（椭圆外接矩形半边长）
-
-        # 1. 轨道环（暗色底环，create_oval 画粗描边空心圆）
-        c.create_oval(margin, margin, S - margin, S - margin,
-                      outline="#2A2A2A", width=ring_w, fill="")
-        # 2. 进度弧（彩色，从 12 点钟方向顺时针填充 ratio 比例）
         if ratio > 0:
-            c.create_arc(margin, margin, S - margin, S - margin,
-                         start=90, extent=-360 * ratio, style="arc",
-                         width=ring_w, outline=arc_color)
-        # 3. 内圆载体（深色实心圆，盖住弧线内部，给文字一个底色）
-        ir = ring_r - ring_w / 2  # 内圆半径 = 环内缘
-        c.create_oval(cx - ir, cx - ir, cx + ir, cx + ir,
-                      fill="#1A1A1A", outline="#333333", width=1)
-        # 4. 百分比数字 + % 符号
-        c.create_text(cx, cx - 4, text=num, fill=fg,
-                      font=("Segoe UI", 14, "bold"))
-        c.create_text(cx, cx + 13, text="%", fill=fg,
-                      font=("Segoe UI", 7))
+            # 从 12 点钟方向顺时针（start=90°×16，span 负 = 顺时针）
+            pen.setColor(_arc_color(pct))
+            painter.setPen(pen)
+            painter.drawArc(rect, 90 * 16, int(-ratio * 360 * 16))
 
-        try:
-            self._root.after(1000, self._refresh)
-        except Exception:
-            pass
+    def _draw_inner(self, painter, S, m, rw, state, pct):
+        """绘制内圆（径向渐变）+ 百分比文字。"""
+        cx, cy = S / 2, S / 2
+        ir = (S / 2 - m) - rw / 2  # 内圆半径 = 环内缘
+
+        # 内圆
+        inner = QRectF(cx - ir, cy - ir, 2 * ir, 2 * ir)
+        grad = QRadialGradient(QPointF(cx, cy - ir * 0.4), ir * 1.3)
+        grad.setColorAt(0, _INNER_LIGHT)
+        grad.setColorAt(1, _INNER_DARK)
+        painter.setBrush(QBrush(grad))
+        painter.setPen(QPen(_INNER_BORDER, 1))
+        painter.drawEllipse(inner)
+
+        # 百分比数字
+        if state is None:
+            num = "—"
+        elif not state.ok:
+            num = "!"
+        else:
+            num = str(int(round(pct)))
+
+        painter.setPen(_TEXT)
+        font = QFont("Segoe UI", 15)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(0, -3, S, S), Qt.AlignCenter, num)
+
+        painter.setPen(_TEXT_DIM)
+        painter.setFont(QFont("Segoe UI", 7))
+        painter.drawText(QRectF(0, 14, S, S), Qt.AlignCenter, "%")
+
+    # —— 鼠标交互 ——
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.pos()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+
+    def mouseReleaseEvent(self, _event):
+        self._drag_offset = None
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        menu.addAction("退出悬浮球", QApplication.quit)
+        menu.exec(event.globalPos())
