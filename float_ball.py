@@ -40,35 +40,39 @@ def _arc_color(pct):
 
 
 class FloatBall:
-    """悬浮球管理器：子线程启动 QApplication，持有 _BallWidget。
+    """悬浮球管理器。QApplication 应在主线程运行（Qt 要求）。
 
-    对外接口与 tkinter 版完全一致（start / stop），monitor.py 无需改动。
+    调用 run_main() 在主线程阻塞运行；start() 为兼容接口（子线程，可能不显示）。
     """
 
     def __init__(self, monitor):
         self._monitor = monitor
         self._app = None
+        self._widget = None
         self._thread = None
 
+    def run_main(self):
+        """在当前线程（应为主线程）阻塞运行 QApplication。
+
+        Qt 要求 QApplication 在主线程创建，否则窗口在 Windows 上可能不显示。
+        """
+        try:
+            self._app = QApplication.instance() or QApplication(sys.argv[:1])
+            self._widget = _BallWidget(self._monitor)
+            self._app.exec()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
     def start(self):
-        """在子线程启动悬浮球（非阻塞）。"""
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        """兼容接口：在子线程运行（不推荐，Qt 要求主线程）。"""
+        self._thread = threading.Thread(target=self.run_main, daemon=True)
         self._thread.start()
 
     def stop(self):
         """关闭悬浮球（线程安全，可跨线程调用）。"""
         if self._app is not None:
             self._app.quit()
-
-    def _run(self):
-        """悬浮球主循环（子线程；QApplication 全生命周期在此线程内）。"""
-        try:
-            self._app = QApplication.instance() or QApplication(sys.argv[:1])
-            _BallWidget(self._monitor)
-            self._app.exec()
-        except Exception:
-            import traceback
-            traceback.print_exc()
 
 
 class _BallWidget(QWidget):
@@ -96,7 +100,17 @@ class _BallWidget(QWidget):
         self._timer.timeout.connect(self.update)
         self._timer.start(1000)
 
+        # 定期检查退出标志（dashboard/tray 触发退出时同步关闭 QApplication）
+        self._stop_timer = QTimer(self)
+        self._stop_timer.timeout.connect(self._check_stop)
+        self._stop_timer.start(500)
+
         self.show()
+
+    def _check_stop(self):
+        """检测 monitor 的 stop_event，同步退出 QApplication。"""
+        if self._monitor.stop_event.is_set():
+            QApplication.quit()
 
     def paintEvent(self, _event):
         """绘制环形进度条：轨道环 → 进度弧 → 内圆 → 文字。"""
@@ -192,5 +206,10 @@ class _BallWidget(QWidget):
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
-        menu.addAction("退出悬浮球", QApplication.quit)
+        menu.addAction("退出悬浮球", self._quit)
         menu.exec(event.globalPos())
+
+    def _quit(self):
+        """退出悬浮球并通知整个监控停止。"""
+        self._monitor.stop_event.set()
+        QApplication.quit()

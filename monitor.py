@@ -73,21 +73,32 @@ class Monitor:
                 self.refresh_now.clear()
 
     def run(self):
-        """启动监控。"""
+        """启动监控。
+
+        有悬浮球时 QApplication 占用主线程（Qt 要求），dashboard 移到子线程；
+        无悬浮球时 dashboard 在主线程（原逻辑）。
+        """
         threading.Thread(target=self._fetch_loop, daemon=True).start()
         try:
             self.tray.start()
         except Exception as e:
             print(f"托盘启动失败（不影响终端监控）: {e}")
         if self.float_ball is not None:
-            self.float_ball.start()
-        try:
-            self.dashboard.run(self.stop_event)
-        finally:
-            self.tray.stop()
-            if self.float_ball is not None:
+            threading.Thread(
+                target=self.dashboard.run, args=(self.stop_event,), daemon=True
+            ).start()
+            try:
+                self.float_ball.run_main()
+            finally:
+                self.tray.stop()
                 self.float_ball.stop()
-            print("已退出监控。")
+                print("已退出监控。")
+        else:
+            try:
+                self.dashboard.run(self.stop_event)
+            finally:
+                self.tray.stop()
+                print("已退出监控。")
 
 
 if __name__ == "__main__":
