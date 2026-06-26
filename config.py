@@ -1,4 +1,4 @@
-﻿"""配置加载：从 .env 读取凭证与运行参数。"""
+"""配置加载：从 .env 读取凭证与运行参数。"""
 import os
 from dataclasses import dataclass
 

@@ -1,4 +1,4 @@
-﻿"""SQLite 历史存储与趋势查询。"""
+"""SQLite 历史存储与趋势查询。"""
 import json
 import sqlite3
 from contextlib import contextmanager

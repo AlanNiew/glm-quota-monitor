@@ -1,4 +1,4 @@
-﻿"""GLM 配额接口请求与解析。"""
+"""GLM 配额接口请求与解析。"""
 from dataclasses import dataclass, field
 from typing import List, Optional
 

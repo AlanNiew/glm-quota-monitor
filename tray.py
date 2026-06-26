@@ -1,4 +1,4 @@
-﻿"""系统托盘：图标按用量变色，提供刷新/退出菜单。"""
+"""系统托盘：图标按用量变色，提供刷新/退出菜单。"""
 from PIL import Image, ImageDraw
 import pystray
 
