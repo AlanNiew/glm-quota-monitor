@@ -123,7 +123,7 @@ class _BallWidget(QWidget):
 
         S = self.SIZE
         m = 6   # 环与窗口边缘间距
-        rw = 7  # 环线宽
+        rw = 5  # 环线宽
         rect = QRectF(m, m, S - 2 * m, S - 2 * m)
 
         self._draw_shadow(painter, S)
