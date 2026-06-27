@@ -3,3 +3,8 @@
 __pycache__/
 *.pyc
 venv/
+
+# PyInstaller 打包产物
+build/
+dist/
+*.spec

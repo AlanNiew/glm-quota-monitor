@@ -1,12 +1,21 @@
 """配置加载：从 .env 读取凭证与运行参数。"""
 import os
+import sys
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
 from paths import db_path as _default_db_path
 
-load_dotenv()
+
+def _env_file():
+    """定位 .env：打包后用 exe 旁，开发期用项目根（cwd）。"""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), ".env")
+    return None  # load_dotenv(None) 默认查 cwd/.env
+
+
+load_dotenv(_env_file())
 
 
 @dataclass
