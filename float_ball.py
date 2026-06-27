@@ -139,7 +139,16 @@ class _BallWidget(QWidget):
         self._docked_side = None     # None / "left" / "right"
         self._float_pos = None       # 吸附前的展开位置
         self._anim = None            # 位移动画
-        self._expanding = False      # 是否因 hover 展开中（leave 时据此收缩）
+        self._expanded = False       # 当前是否展开（收缩态 False）
+
+        # 收缩延迟定时器：鼠标离开后延迟收缩，过滤动画中的瞬时误判
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._collapse)
+        # 轮询鼠标位置控制展开/收缩（enter/leave 在 widget 移动时会误触发抖动）
+        self._dock_timer = QTimer(self)
+        self._dock_timer.timeout.connect(self._dock_poll)
+        self._dock_timer.start(150)
 
         # 跨线程动作队列：托盘菜单（pystray 线程）投递的动作由主线程定时器消费
         self._actions = queue.Queue()
@@ -188,17 +197,13 @@ class _BallWidget(QWidget):
         return "\n".join(lines)
 
     def enterEvent(self, _event):
-        """鼠标进入：启动 tooltip 延迟 + 吸附状态展开。"""
+        """鼠标进入：启动 tooltip 延迟（吸附展开/收缩由 _dock_timer 轮询管理）。"""
         self._tooltip_delay.start(500)
-        if self._docked_side is not None and not self._expanding:
-            self._expand()
 
     def leaveEvent(self, _event):
-        """鼠标离开：取消 tooltip + 吸附状态收缩。"""
+        """鼠标离开：取消 tooltip（吸附收缩由 _dock_timer 轮询管理）。"""
         self._tooltip_delay.stop()
         QToolTip.hideText()
-        if self._docked_side is not None and self._expanding:
-            self._collapse()
 
     def _show_tooltip(self):
         """定时器触发：立即在鼠标位置弹出 Tooltip。"""
@@ -241,14 +246,14 @@ class _BallWidget(QWidget):
         """吸附到指定边：记录展开位置并收缩到屏外。"""
         self._docked_side = side
         self._float_pos = QPoint(float_pos.x(), float_pos.y())
-        self._expanding = False
+        self._expanded = False
         self._animate_to(self._hidden_pos(side, float_pos.y()))
 
     def _expand(self):
         """从吸附状态展开回可见位置。"""
         if self._float_pos is None:
             return
-        self._expanding = True
+        self._expanded = True
         self._animate_to(self._float_pos)
 
     def _collapse(self):
@@ -256,9 +261,26 @@ class _BallWidget(QWidget):
         side = self._docked_side
         if side is None:
             return
-        self._expanding = False
+        self._expanded = False
         y = self._float_pos.y() if self._float_pos else self.pos().y()
         self._animate_to(self._hidden_pos(side, y))
+
+    def _dock_poll(self):
+        """轮询鼠标位置，控制吸附展开/收缩。
+
+        不用 enterEvent/leaveEvent——widget 动画移动时它们会误触发抖动。
+        鼠标进入立即展开；离开延迟 400ms 收缩，过滤动画中的瞬时误判。
+        """
+        if self._docked_side is None:
+            return
+        inside = self.geometry().contains(QCursor.pos())
+        if inside:
+            if self._hide_timer.isActive():
+                self._hide_timer.stop()   # 鼠标回来，取消挂起的收缩
+            if not self._expanded:
+                self._expand()
+        elif self._expanded and not self._hide_timer.isActive():
+            self._hide_timer.start(400)   # 鼠标离开，延迟收缩
 
     def _process_actions(self):
         """主线程消费跨线程投递的动作（show/hide 等）。"""
@@ -284,7 +306,7 @@ class _BallWidget(QWidget):
         pct = state.tokens_pct if (state and state.ok) else None
 
         # 收缩状态：仅画边缘竖条进度，不画环形球
-        if self._docked_side is not None and not self._expanding:
+        if self._docked_side is not None and not self._expanded:
             self._draw_edge_bar(painter, pct)
             painter.end()
             return
@@ -393,7 +415,7 @@ class _BallWidget(QWidget):
         # 拖动开始：取消吸附，让用户能把球拖走
         if self._docked_side is not None:
             self._docked_side = None
-            self._expanding = False
+            self._expanded = False
             if self._anim is not None:
                 self._anim.stop()
         if event.button() == Qt.LeftButton:
