@@ -101,7 +101,7 @@ class _BallWidget(QWidget):
 
     SIZE = 72
     EDGE_THRESHOLD = 12   # 距屏幕边缘多少像素内（拖动结束时）触发吸附
-    EDGE_REVEAL = 4       # 收缩后露出的像素，鼠标移入即展开
+    EDGE_REVEAL = 6       # 收缩后露出的竖条宽（兼作进度条宽度）
 
     def __init__(self, monitor):
         super().__init__()
@@ -282,6 +282,13 @@ class _BallWidget(QWidget):
 
         state = self._monitor.state
         pct = state.tokens_pct if (state and state.ok) else None
+
+        # 收缩状态：仅画边缘竖条进度，不画环形球
+        if self._docked_side is not None and not self._expanding:
+            self._draw_edge_bar(painter, pct)
+            painter.end()
+            return
+
         ratio = max(0.0, min(1.0, (pct or 0) / 100.0)) if pct is not None else 0.0
 
         S = self.SIZE
@@ -293,6 +300,32 @@ class _BallWidget(QWidget):
         self._draw_rings(painter, rect, rw, ratio, pct)
         self._draw_inner(painter, S, m, rw, state, pct)
         painter.end()
+
+    def _draw_edge_bar(self, painter, pct):
+        """收缩状态：在露出的边缘绘制竖向用量进度条。
+
+        左吸附露出 widget 右侧，右吸附露出左侧。轨道满高浅灰，
+        前景按百分比从下往上填充，颜色随用量变化（绿→黄→橙→红）。
+        """
+        S = self.SIZE
+        w = self.EDGE_REVEAL
+        x = (S - w) if self._docked_side == "left" else 0
+        margin = 6
+        bar_h = S - 2 * margin
+        bar_rect = QRectF(x, margin, w, bar_h)
+        radius = w / 2  # 胶囊形圆角
+
+        # 轨道
+        painter.setBrush(QBrush(_TRACK))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(bar_rect, radius, radius)
+
+        # 前景填充（按 pct 从下往上）
+        if pct is not None and pct > 0:
+            fill_h = bar_h * (min(pct, 100) / 100.0)
+            fill_rect = QRectF(x, margin + bar_h - fill_h, w, fill_h)
+            painter.setBrush(QBrush(_arc_color(pct)))
+            painter.drawRoundedRect(fill_rect, radius, radius)
 
     def _draw_shadow(self, painter, S):
         """手动画柔和投影（径向渐变黑→透明）。
