@@ -213,7 +213,7 @@ class _BallWidget(QWidget):
 
     # —— 边缘吸附 ——
 
-    def _animate_to(self, pos, duration=200):
+    def _animate_to(self, pos, duration=250, on_finished=None):
         """平滑移动到目标位置。"""
         if self._anim is not None:
             self._anim.stop()
@@ -221,7 +221,9 @@ class _BallWidget(QWidget):
         self._anim.setDuration(duration)
         self._anim.setStartValue(self.pos())
         self._anim.setEndValue(pos)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.setEasingCurve(QEasingCurve.OutQuint)  # 更柔和的减速曲线
+        if on_finished is not None:
+            self._anim.finished.connect(on_finished)
         self._anim.start()
 
     def _check_dock(self):
@@ -257,13 +259,17 @@ class _BallWidget(QWidget):
         self._animate_to(self._float_pos)
 
     def _collapse(self):
-        """从展开状态收缩回吸附位置。"""
+        """从展开状态收缩：先让球滑出屏外（仍画球），动画结束才切竖条，避免跳变。"""
         side = self._docked_side
         if side is None:
             return
-        self._expanded = False
         y = self._float_pos.y() if self._float_pos else self.pos().y()
-        self._animate_to(self._hidden_pos(side, y))
+        self._animate_to(self._hidden_pos(side, y), on_finished=self._finish_collapse)
+
+    def _finish_collapse(self):
+        """收缩动画结束：此时球已滑出不可见，切换到竖条绘制无跳变。"""
+        self._expanded = False
+        self.update()
 
     def _dock_poll(self):
         """轮询鼠标位置，控制吸附展开/收缩。
