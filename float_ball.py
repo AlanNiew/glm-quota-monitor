@@ -102,6 +102,7 @@ class _BallWidget(QWidget):
     SIZE = 72
     EDGE_THRESHOLD = 12   # 距屏幕边缘多少像素内（拖动结束时）触发吸附
     EDGE_REVEAL = 6       # 收缩后露出的竖条宽（兼作进度条宽度）
+    POPUP_OFFSET = 18     # 展开时离吸附边缘的余量，避免贴边导致鼠标易离开触发收缩
 
     def __init__(self, monitor):
         super().__init__()
@@ -252,11 +253,19 @@ class _BallWidget(QWidget):
         self._animate_to(self._hidden_pos(side, float_pos.y()))
 
     def _expand(self):
-        """从吸附状态展开回可见位置。"""
+        """展开到离边的弹出位置（留余量，避免贴边导致鼠标轻动即触发收缩）。"""
         if self._float_pos is None:
             return
         self._expanded = True
-        self._animate_to(self._float_pos)
+        self._animate_to(self._popup_pos())
+
+    def _popup_pos(self):
+        """展开目标位置：离吸附边缘留 POPUP_OFFSET 余量，完全进入屏内。"""
+        fp = self._float_pos
+        screen = QApplication.primaryScreen().geometry()
+        if self._docked_side == "left":
+            return QPoint(self.EDGE_THRESHOLD + self.POPUP_OFFSET, fp.y())
+        return QPoint(screen.width() - self.SIZE - self.EDGE_THRESHOLD - self.POPUP_OFFSET, fp.y())
 
     def _collapse(self):
         """从展开状态收缩：先让球滑出屏外（仍画球），动画结束才切竖条，避免跳变。"""
