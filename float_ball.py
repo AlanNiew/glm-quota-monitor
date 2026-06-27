@@ -4,17 +4,19 @@ QPainter + Antialiasing 绘制四层：柔和投影 → 暗色轨道环 → 彩�
 → 白色渐变内圆 → 深色百分比文字。独立子线程运行 QApplication.exec()，
 QTimer 每秒触发重绘读取最新状态。
 
-交互：左键拖动移动，右键弹出退出菜单。
+交互：左键拖动移动，右键弹出退出菜单，鼠标悬停显示用量明细 Tooltip。
 """
 import sys
 import threading
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRadialGradient, QBrush
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRadialGradient, QBrush, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
     QMenu,
+    QToolTip,
 )
 
 # ── 浅色配色（Apple system colors 风格）──
@@ -37,6 +39,16 @@ def _arc_color(pct):
     if pct >= 80:
         return QColor("#FFCC00")  # 黄
     return QColor("#34C759")      # 绿
+
+
+def _fmt_ts(ms):
+    """毫秒时间戳转可读时间（本地时区），失败或无值返回占位符。"""
+    if not ms:
+        return "—"
+    try:
+        return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return "—"
 
 
 class FloatBall:
@@ -95,9 +107,9 @@ class _BallWidget(QWidget):
         screen = QApplication.primaryScreen().geometry()
         self.move(screen.width() - self.SIZE - 24, screen.height() - self.SIZE - 80)
 
-        # 每秒触发重绘
+        # 每秒触发重绘 + 刷新 Tooltip
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self.update)
+        self._timer.timeout.connect(self._on_tick)
         self._timer.start(1000)
 
         # 定期检查退出标志（dashboard/tray 触发退出时同步关闭 QApplication）
@@ -105,7 +117,67 @@ class _BallWidget(QWidget):
         self._stop_timer.timeout.connect(self._check_stop)
         self._stop_timer.start(500)
 
+        # Tooltip 快速显示：默认 setToolTip 要等系统悬停超时（~1-2s）才弹，
+        # 这里用 QToolTip.showText 在鼠标进入后 200ms 立即弹出，绕过系统延迟。
+        self._tooltip_delay = QTimer(self)
+        self._tooltip_delay.setSingleShot(True)
+        self._tooltip_delay.timeout.connect(self._show_tooltip)
+        self._tooltip_text = ""
+
         self.show()
+
+    def _on_tick(self):
+        """每秒回调：重绘 + 更新 Tooltip 文本。"""
+        self.update()
+        self._refresh_tooltip()
+
+    def _refresh_tooltip(self):
+        """每秒刷新 Tooltip 文本缓存，供 hover 时立即显示。"""
+        self._tooltip_text = self._build_tooltip_text()
+
+    def _build_tooltip_text(self):
+        """构造 Tooltip 文本（鼠标悬停时显示）。"""
+        state = self._monitor.state
+        if state is None:
+            return "GLM 用量监控\n\n正在获取数据…"
+        if not state.ok:
+            return f"GLM 用量监控\n\n获取失败：{state.error or '未知错误'}"
+        lines = ["GLM 用量监控"]
+        if state.level:
+            lines.append(f"套餐等级：{state.level}")
+        lines.append("")
+        lines.append("—— Token 用量 ——")
+        lines.append(f"已用：{state.tokens_pct:.1f}%" if state.tokens_pct is not None else "已用：—")
+        lines.append(f"重置：{_fmt_ts(state.tokens_next_reset)}")
+        lines.append("")
+        lines.append("—— 调用次数 ——")
+        if state.time_total is not None:
+            cur = state.time_current if state.time_current is not None else 0
+            pct_str = f"（{state.time_pct:.1f}%）" if state.time_pct is not None else ""
+            lines.append(f"已用：{cur} / {state.time_total} {pct_str}".rstrip())
+        else:
+            lines.append("已用：—")
+        if state.time_remaining is not None:
+            lines.append(f"剩余：{state.time_remaining}")
+        lines.append(f"重置：{_fmt_ts(state.time_next_reset)}")
+        lines.append("")
+        lines.append(f"更新：{self._monitor.last_fetch.strftime('%H:%M:%S')}" if self._monitor.last_fetch else "更新：—")
+        return "\n".join(lines)
+
+    def enterEvent(self, _event):
+        """鼠标进入：启动短延迟定时器，绕过系统默认悬停超时。"""
+        self._tooltip_delay.start(500)
+
+    def leaveEvent(self, _event):
+        """鼠标离开：取消挂起的显示并隐藏 Tooltip。"""
+        self._tooltip_delay.stop()
+        QToolTip.hideText()
+
+    def _show_tooltip(self):
+        """定时器触发：立即在鼠标位置弹出 Tooltip。"""
+        if not self.underMouse():
+            return
+        QToolTip.showText(QCursor.pos(), self._tooltip_text, self)
 
     def _check_stop(self):
         """检测 monitor 的 stop_event，同步退出 QApplication。"""
@@ -182,7 +254,7 @@ class _BallWidget(QWidget):
             num = str(int(round(pct)))
 
         painter.setPen(_TEXT)
-        font = QFont("Segoe UI", 15)
+        font = QFont("Segoe UI", 16)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(QRectF(0, -3, S, S), Qt.AlignCenter, num)
