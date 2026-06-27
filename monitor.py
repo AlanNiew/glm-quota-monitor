@@ -8,8 +8,8 @@ from quota_client import QuotaClient
 from storage import Storage
 from alerter import Alerter
 from tray import TrayApp
-from dashboard import Dashboard
 from float_ball import FloatBall
+from logger import setup
 
 
 class Monitor:
@@ -18,16 +18,21 @@ class Monitor:
     AUTH_FAIL_THRESHOLD = 2  # 连续失败达到此次数 → 触发凭证过期告警
 
     def __init__(self):
+        self.log = setup()
         self.config = load_config()
         if not self.config.authorization:
-            print("错误：未配置 GLM_AUTHORIZATION，请在 .env 中填写凭证。")
+            self.log.error("未配置 GLM_AUTHORIZATION，请在 .env 中填写凭证")
             sys.exit(1)
 
         self.client = QuotaClient(self.config)
         self.storage = Storage(self.config.db_path)
         self.alerter = Alerter(self.config)
         self.tray = TrayApp(self) if self.config.tray else None
-        self.dashboard = Dashboard(self) if self.config.dashboard else None
+        if self.config.dashboard:
+            from dashboard import Dashboard  # 延迟加载，避免 rich/plotext 拖入后台运行模式
+            self.dashboard = Dashboard(self)
+        else:
+            self.dashboard = None
         self.float_ball = FloatBall(self) if self.config.float_ball else None
 
         self.lock = threading.Lock()
@@ -60,6 +65,7 @@ class Monitor:
             self.alerter.check("time", usage.time_pct)
         else:
             self.consecutive_failures += 1
+            self.log.warning("拉取失败（第 %d 次）：%s", self.consecutive_failures, usage.error)
             if self.consecutive_failures == self.AUTH_FAIL_THRESHOLD:
                 self.alerter.notify_auth_expired(usage.error)
         if self.tray is not None:
@@ -81,13 +87,17 @@ class Monitor:
         - 无悬浮球有仪表盘 → 仪表盘占主线程
         - 两者都无 → 主线程 wait(stop_event)，仅托盘 + 后台拉取
         """
+        self.log.info(
+            "监控启动（dashboard=%s tray=%s float_ball=%s）",
+            self.config.dashboard, self.config.tray is not None, self.config.float_ball is not None,
+        )
         threading.Thread(target=self._fetch_loop, daemon=True).start()
 
         if self.tray is not None:
             try:
                 self.tray.start()
             except Exception as e:
-                print(f"托盘启动失败（不影响其他功能）: {e}")
+                self.log.warning("托盘启动失败（不影响其他功能）: %s", e)
 
         if self.float_ball is not None:
             if self.dashboard is not None:
@@ -98,7 +108,7 @@ class Monitor:
         elif self.dashboard is not None:
             self._run_blocking(lambda: self.dashboard.run(self.stop_event))
         else:
-            print("监控运行中（仅托盘 + 后台拉取），通过托盘菜单或 Ctrl+C 退出。")
+            self.log.info("监控运行中（仅托盘 + 后台拉取），通过托盘菜单退出")
             self._run_blocking(self.stop_event.wait)
 
     def _run_blocking(self, target):
@@ -110,7 +120,7 @@ class Monitor:
                 self.tray.stop()
             if self.float_ball is not None:
                 self.float_ball.stop()
-            print("已退出监控。")
+            self.log.info("已退出监控")
 
 
 if __name__ == "__main__":

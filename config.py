@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+from paths import db_path as _default_db_path
+
 load_dotenv()
 
 
@@ -40,7 +42,7 @@ def load_config() -> Config:
         warn1=float(os.getenv("WARN_1", "80")),
         warn2=float(os.getenv("WARN_2", "90")),
         warn3=float(os.getenv("WARN_3", "95")),
-        db_path=os.getenv("DB_PATH", "usage.db"),
+        db_path=os.getenv("DB_PATH") or str(_default_db_path()),
         dashboard=_flag("DASHBOARD"),
         tray=_flag("TRAY"),
         float_ball=_flag("FLOAT_BALL"),

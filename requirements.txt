@@ -1,8 +1,11 @@
-﻿requests>=2.31
-rich>=13.0
+# 核心依赖（托盘 + 悬浮球 + 拉取 + 日志）
+requests>=2.31
 pystray>=0.19
 Pillow>=10.0
 plyer>=2.1
 python-dotenv>=1.0
-plotext>=5.0
 PySide6>=6.5
+
+# 仅终端仪表盘需要（DASHBOARD=1 时；打包后台运行可不安装以瘦身）
+rich>=13.0
+plotext>=5.0
