@@ -214,7 +214,7 @@ class _BallWidget(QWidget):
 
     # —— 边缘吸附 ——
 
-    def _animate_to(self, pos, duration=250, on_finished=None):
+    def _animate_to(self, pos, duration=250, on_finished=None, easing=QEasingCurve.OutQuint):
         """平滑移动到目标位置。"""
         if self._anim is not None:
             self._anim.stop()
@@ -222,7 +222,7 @@ class _BallWidget(QWidget):
         self._anim.setDuration(duration)
         self._anim.setStartValue(self.pos())
         self._anim.setEndValue(pos)
-        self._anim.setEasingCurve(QEasingCurve.OutQuint)  # 更柔和的减速曲线
+        self._anim.setEasingCurve(easing)
         if on_finished is not None:
             self._anim.finished.connect(on_finished)
         self._anim.start()
@@ -257,7 +257,7 @@ class _BallWidget(QWidget):
         if self._float_pos is None:
             return
         self._expanded = True
-        self._animate_to(self._popup_pos())
+        self._animate_to(self._popup_pos(), easing=QEasingCurve.OutBack)  # 过冲回弹，弹性入场
 
     def _popup_pos(self):
         """展开目标位置：离吸附边缘留 POPUP_OFFSET 余量，完全进入屏内。"""
@@ -273,7 +273,7 @@ class _BallWidget(QWidget):
         if side is None:
             return
         y = self._float_pos.y() if self._float_pos else self.pos().y()
-        self._animate_to(self._hidden_pos(side, y), on_finished=self._finish_collapse)
+        self._animate_to(self._hidden_pos(side, y), on_finished=self._finish_collapse, easing=QEasingCurve.InBack)  # 先回弹再滑出
 
     def _finish_collapse(self):
         """收缩动画结束：此时球已滑出不可见，切换到竖条绘制无跳变。"""
@@ -295,7 +295,7 @@ class _BallWidget(QWidget):
             if not self._expanded:
                 self._expand()
         elif self._expanded and not self._hide_timer.isActive():
-            self._hide_timer.start(400)   # 鼠标离开，延迟收缩
+            self._hide_timer.start(200)   # 鼠标离开，延迟收缩
 
     def _process_actions(self):
         """主线程消费跨线程投递的动作（show/hide 等）。"""
