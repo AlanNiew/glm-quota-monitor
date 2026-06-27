@@ -38,19 +38,26 @@ class TrayApp:
         return img
 
     def _overall_pct(self, state):
-        """取两个配额百分比的最大值作为整体状态。"""
+        """取所有配额百分比的最大值作为整体状态。"""
         if not state or not state.ok:
             return None
-        pcts = [p for p in (state.tokens_pct, state.time_pct) if p is not None]
+        pcts = [
+            p for p in (
+                state.tokens_weekly_pct,
+                state.tokens_5h_pct,
+                state.time_pct,
+            ) if p is not None
+        ]
         return max(pcts) if pcts else None
 
     def _build_title(self, state):
         """构建托盘 hover 提示文本。"""
         if not state or not state.ok:
             return "GLM 用量监控 · 等待数据..."
-        t = f"{state.tokens_pct}%" if state.tokens_pct is not None else "—"
+        w = f"{state.tokens_weekly_pct}%" if state.tokens_weekly_pct is not None else "—"
+        h = f"{state.tokens_5h_pct}%" if state.tokens_5h_pct is not None else "—"
         c = f"{state.time_pct}%" if state.time_pct is not None else "—"
-        return f"GLM 用量监控  Token {t} | 调用 {c}"
+        return f"GLM 用量监控  周{w} 5小时{h} | 调用 {c}"
 
     def update(self, state):
         """刷新托盘图标与提示。"""

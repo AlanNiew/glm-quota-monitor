@@ -9,12 +9,20 @@ class Alerter:
     """告警管理器。"""
 
     LABELS = {1: "注意", 2: "警告", 3: "严重"}
-    TITLE_MAP = {"tokens": "Token 用量配额", "time": "调用次数配额"}
+    TITLE_MAP = {
+        "tokens_weekly": "Token 用量（每周）",
+        "tokens_5h": "Token 用量（5 小时）",
+        "time": "调用次数配额",
+    }
 
     def __init__(self, config):
         # 阈值与档位（按由低到高排列）
         self.thresholds = [(config.warn1, 1), (config.warn2, 2), (config.warn3, 3)]
-        self.triggered = {"tokens": 0, "time": 0}  # 各维度已触发的最高档
+        self.triggered = {
+            "tokens_weekly": 0,
+            "tokens_5h": 0,
+            "time": 0,
+        }  # 各维度已触发的最高档
         self.auth_notified = False  # 凭证失效告警是否已触发
 
     def _level_of(self, pct) -> int:

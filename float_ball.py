@@ -11,7 +11,7 @@ import queue
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QPoint, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QPoint, QPropertyAnimation, QEasingCurve, Property
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRadialGradient, QBrush, QCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -102,7 +102,17 @@ class _BallWidget(QWidget):
     SIZE = 72
     EDGE_THRESHOLD = 12   # 距屏幕边缘多少像素内（拖动结束时）触发吸附
     EDGE_REVEAL = 6       # 收缩后露出的竖条宽（兼作进度条宽度）
-    POPUP_OFFSET = 18     # 展开时离吸附边缘的余量，避免贴边导致鼠标易离开触发收缩
+    POPUP_OFFSET = 4      # 展开时离吸附边缘的余量（小一点，几乎贴边但完整可见）
+
+    @Property(float)
+    def morph(self):
+        """形态值：0=竖条态，1=球态；吸附展开/收缩时动画驱动，paintEvent 据此交叉淡入淡出。"""
+        return self._morph
+
+    @morph.setter
+    def morph(self, v):
+        self._morph = v
+        self.update()
 
     def __init__(self, monitor):
         super().__init__()
@@ -140,6 +150,8 @@ class _BallWidget(QWidget):
         self._docked_side = None     # None / "left" / "right"
         self._float_pos = None       # 吸附前的展开位置
         self._anim = None            # 位移动画
+        self._morph_anim = None      # 形态动画（竖条 ↔ 球）
+        self._morph = 1.0            # 当前形态：0=竖条，1=球
         self._expanded = False       # 当前是否展开（收缩态 False）
 
         # 收缩延迟定时器：鼠标离开后延迟收缩，过滤动画中的瞬时误判
@@ -179,9 +191,13 @@ class _BallWidget(QWidget):
         if state.level:
             lines.append(f"套餐等级：{state.level}")
         lines.append("")
-        lines.append("—— Token 用量 ——")
-        lines.append(f"已用：{state.tokens_pct:.1f}%" if state.tokens_pct is not None else "已用：—")
-        lines.append(f"重置：{_fmt_ts(state.tokens_next_reset)}")
+        lines.append("—— Token（5小时）——")
+        lines.append(f"已用：{state.tokens_5h_pct:.1f}%" if state.tokens_5h_pct is not None else "已用：—")
+        lines.append(f"重置：{_fmt_ts(state.tokens_5h_reset)}")
+        lines.append("")
+        lines.append("—— Token（每周）——")
+        lines.append(f"已用：{state.tokens_weekly_pct:.1f}%" if state.tokens_weekly_pct is not None else "已用：—")
+        lines.append(f"重置：{_fmt_ts(state.tokens_weekly_reset)}")
         lines.append("")
         lines.append("—— 调用次数 ——")
         if state.time_total is not None:
@@ -214,7 +230,7 @@ class _BallWidget(QWidget):
 
     # —— 边缘吸附 ——
 
-    def _animate_to(self, pos, duration=250, on_finished=None, easing=QEasingCurve.OutQuint):
+    def _animate_to(self, pos, duration=250, on_finished=None, easing=QEasingCurve.OutCubic):
         """平滑移动到目标位置。"""
         if self._anim is not None:
             self._anim.stop()
@@ -246,18 +262,20 @@ class _BallWidget(QWidget):
         return QPoint(screen.width() - self.EDGE_REVEAL, y)
 
     def _dock(self, side, float_pos):
-        """吸附到指定边：记录展开位置并收缩到屏外。"""
+        """吸附到指定边：记录展开位置，收缩到屏外（位移 + 球→竖条形态过渡）。"""
         self._docked_side = side
         self._float_pos = QPoint(float_pos.x(), float_pos.y())
         self._expanded = False
-        self._animate_to(self._hidden_pos(side, float_pos.y()))
+        self._animate_to(self._hidden_pos(side, float_pos.y()), easing=QEasingCurve.OutCubic)
+        self._animate_morph(0.0)
 
     def _expand(self):
-        """展开到离边的弹出位置（留余量，避免贴边导致鼠标轻动即触发收缩）。"""
+        """展开：位移滑入 + 竖条→球形态过渡（同步淡入，无跳变）。"""
         if self._float_pos is None:
             return
         self._expanded = True
-        self._animate_to(self._popup_pos(), easing=QEasingCurve.OutBack)  # 过冲回弹，弹性入场
+        self._animate_to(self._popup_pos(), easing=QEasingCurve.OutCubic)
+        self._animate_morph(1.0)
 
     def _popup_pos(self):
         """展开目标位置：离吸附边缘留 POPUP_OFFSET 余量，完全进入屏内。"""
@@ -268,17 +286,25 @@ class _BallWidget(QWidget):
         return QPoint(screen.width() - self.SIZE - self.EDGE_THRESHOLD - self.POPUP_OFFSET, fp.y())
 
     def _collapse(self):
-        """从展开状态收缩：先让球滑出屏外（仍画球），动画结束才切竖条，避免跳变。"""
+        """收缩：位移滑出 + 球→竖条形态过渡（同步淡出，无跳变）。"""
         side = self._docked_side
         if side is None:
             return
-        y = self._float_pos.y() if self._float_pos else self.pos().y()
-        self._animate_to(self._hidden_pos(side, y), on_finished=self._finish_collapse, easing=QEasingCurve.InBack)  # 先回弹再滑出
-
-    def _finish_collapse(self):
-        """收缩动画结束：此时球已滑出不可见，切换到竖条绘制无跳变。"""
         self._expanded = False
-        self.update()
+        y = self._float_pos.y() if self._float_pos else self.pos().y()
+        self._animate_to(self._hidden_pos(side, y), easing=QEasingCurve.OutCubic)
+        self._animate_morph(0.0)
+
+    def _animate_morph(self, target, duration=250, easing=QEasingCurve.OutCubic):
+        """驱动形态值 morph 动画，paintEvent 据此混合绘制竖条与球。"""
+        if self._morph_anim is not None:
+            self._morph_anim.stop()
+        self._morph_anim = QPropertyAnimation(self, b"morph", self)
+        self._morph_anim.setDuration(duration)
+        self._morph_anim.setStartValue(self._morph)
+        self._morph_anim.setEndValue(target)
+        self._morph_anim.setEasingCurve(easing)
+        self._morph_anim.start()
 
     def _dock_poll(self):
         """轮询鼠标位置，控制吸附展开/收缩。
@@ -313,30 +339,41 @@ class _BallWidget(QWidget):
             QApplication.quit()
 
     def paintEvent(self, _event):
-        """绘制环形进度条：轨道环 → 进度弧 → 内圆 → 文字。"""
+        """根据形态值 morph 绘制：非吸附/展开=球，收缩=竖条，过渡中交叉淡入淡出。"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
         state = self._monitor.state
         pct = state.tokens_pct if (state and state.ok) else None
 
-        # 收缩状态：仅画边缘竖条进度，不画环形球
-        if self._docked_side is not None and not self._expanded:
-            self._draw_edge_bar(painter, pct)
+        # 非吸附 或 纯球态：只画球
+        if self._docked_side is None or self._morph > 0.999:
+            self._draw_ball(painter, pct)
             painter.end()
             return
 
-        ratio = max(0.0, min(1.0, (pct or 0) / 100.0)) if pct is not None else 0.0
+        # 吸附状态：按 morph 交叉淡入淡出（竖条 + 球叠加）
+        if self._morph > 0.001:
+            painter.setOpacity(1.0 - self._morph)   # 竖条随 morph 递减淡出
+            self._draw_edge_bar(painter, pct)
+            painter.setOpacity(self._morph)         # 球随 morph 递增淡入
+            self._draw_ball(painter, pct)
+            painter.setOpacity(1.0)
+        else:
+            self._draw_edge_bar(painter, pct)
+        painter.end()
 
+    def _draw_ball(self, painter, pct):
+        """绘制完整环形球：投影 → 轨道环+进度弧 → 内圆+百分比。"""
+        ratio = max(0.0, min(1.0, (pct or 0) / 100.0)) if pct is not None else 0.0
         S = self.SIZE
         m = 6   # 环与窗口边缘间距
         rw = 5  # 环线宽
         rect = QRectF(m, m, S - 2 * m, S - 2 * m)
-
+        state = self._monitor.state
         self._draw_shadow(painter, S)
         self._draw_rings(painter, rect, rw, ratio, pct)
         self._draw_inner(painter, S, m, rw, state, pct)
-        painter.end()
 
     def _draw_edge_bar(self, painter, pct):
         """收缩状态：在露出的边缘绘制竖向用量进度条。
@@ -427,12 +464,15 @@ class _BallWidget(QWidget):
     # —— 鼠标交互 ——
 
     def mousePressEvent(self, event):
-        # 拖动开始：取消吸附，让用户能把球拖走
+        # 拖动开始：取消吸附并恢复球态，让用户能把球拖走
         if self._docked_side is not None:
             self._docked_side = None
             self._expanded = False
+            self._morph = 1.0
             if self._anim is not None:
                 self._anim.stop()
+            if self._morph_anim is not None:
+                self._morph_anim.stop()
         if event.button() == Qt.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.pos()
 

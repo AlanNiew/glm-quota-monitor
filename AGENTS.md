@@ -20,7 +20,7 @@ GLM 套餐 Token 用量监控工具的开发指引。仅记录不易从文件名
 - 真实接口探测（不启动 TUI，验证凭证与解析）：
   ```powershell
   $env:PYTHONIOENCODING="utf-8"
-  .\venv\Scripts\python -c "from config import load_config; from quota_client import QuotaClient; u=QuotaClient(load_config()).fetch(); print(u.ok,u.level,u.tokens_pct,u.time_pct,u.time_details)"
+  .\venv\Scripts\python -c "from config import load_config; from quota_client import QuotaClient; u=QuotaClient(load_config()).fetch(); print(u.ok,u.level,u.tokens_weekly_pct,u.tokens_5h_pct,u.time_pct,u.time_details)"
   ```
 - TUI 与系统托盘需交互式终端，无法在非交互 shell 中验证。
 
@@ -38,10 +38,13 @@ GLM 套餐 Token 用量监控工具的开发指引。仅记录不易从文件名
 
 `QuotaClient` 请求 `https://bigmodel.cn/api/monitor/usage/quota/limit`，返回 `data.limits[]`，含两种 `type`：
 
-- `TOKENS_LIMIT`：**只有** `percentage` 与 `nextResetTime`，**没有绝对 token 数**（接口限制，不是 bug）。
+- `TOKENS_LIMIT`：**可能有多条**，用 `(unit, number)` 元组区分周期。仅返回 `percentage` / `nextResetTime`，**没有绝对 token 数**（接口限制，不是 bug）。
+  - `(unit=6, number=1)` → **每周**限额（约 7 天重置），映射到 `UsageData.tokens_weekly_pct` / `tokens_weekly_reset`。
+  - `(unit=3, number=5)` → **5 小时滚动窗口**限额，映射到 `UsageData.tokens_5h_pct` / `tokens_5h_reset`。
+  - 兼容字段 `tokens_pct` / `tokens_next_reset` = 两者中已用较大者及其重置时间，供旧趋势曲线 / 外部脚本消费。
 - `TIME_LIMIT`：`usage`(总额) / `currentValue`(已用) / `remaining` / `percentage` / `nextResetTime` / `usageDetails`(按 `modelCode` 拆分)。
 
-约定：`percentage` = 已用百分比；`nextResetTime` = 毫秒时间戳；`unit` / `number` 字段含义不明，已忽略。
+约定：`percentage` = 已用百分比；`nextResetTime` = 毫秒时间戳；`unit` = 时间单位枚举（3=小时, 5=月, 6=周），`number` = 该单位的数量。新增未知周期类型时 `quota_client.fetch` 当前会静默跳过（仅在 weekly/5h 槽位落库），需扩展映射。
 
 ## 凭证与安全
 

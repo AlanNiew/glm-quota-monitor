@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS usage_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,                  -- 本地时间（ISO）
     level TEXT,                        -- 套餐等级
-    tokens_pct REAL,                   -- TOKENS_LIMIT 已用%
-    tokens_next_reset INTEGER,         -- TOKENS_LIMIT 重置时间（ms）
+    tokens_pct REAL,                   -- Token 综合（取 weekly/5h 较大者，兼容旧趋势）
+    tokens_next_reset INTEGER,         -- 对应重置时间（ms）
+    tokens_weekly_pct REAL,            -- 每周 Token 限额已用% (unit=6, number=1)
+    tokens_weekly_reset INTEGER,       -- 每周重置时间（ms）
+    tokens_5h_pct REAL,                -- 5 小时滚动窗口已用% (unit=3, number=5)
+    tokens_5h_reset INTEGER,           -- 5 小时窗口重置时间（ms）
     time_total INTEGER,                -- TIME_LIMIT 总额
     time_current INTEGER,              -- TIME_LIMIT 已用
     time_remaining INTEGER,            -- TIME_LIMIT 剩余
@@ -21,6 +25,15 @@ CREATE TABLE IF NOT EXISTS usage_log (
     time_details TEXT                  -- 按模型拆分（JSON）
 );
 """
+
+# 老库迁移：CREATE TABLE IF NOT EXISTS 不会为已存在的表补列，
+# 需显式 ALTER TABLE。每条迁移幂等（先检查列是否存在）。
+MIGRATIONS = [
+    ("tokens_weekly_pct", "ALTER TABLE usage_log ADD COLUMN tokens_weekly_pct REAL"),
+    ("tokens_weekly_reset", "ALTER TABLE usage_log ADD COLUMN tokens_weekly_reset INTEGER"),
+    ("tokens_5h_pct", "ALTER TABLE usage_log ADD COLUMN tokens_5h_pct REAL"),
+    ("tokens_5h_reset", "ALTER TABLE usage_log ADD COLUMN tokens_5h_reset INTEGER"),
+]
 
 
 class Storage:
@@ -41,9 +54,13 @@ class Storage:
             conn.close()
 
     def _init(self):
-        """初始化数据表。"""
+        """初始化数据表，并为老库补齐新增列。"""
         with self._conn() as conn:
             conn.execute(CREATE_SQL)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(usage_log)").fetchall()}
+            for col, sql in MIGRATIONS:
+                if col not in existing:
+                    conn.execute(sql)
 
     def insert(self, usage) -> None:
         """写入一条用量记录。"""
@@ -51,14 +68,20 @@ class Storage:
             conn.execute(
                 """INSERT INTO usage_log
                    (ts, level, tokens_pct, tokens_next_reset,
+                    tokens_weekly_pct, tokens_weekly_reset,
+                    tokens_5h_pct, tokens_5h_reset,
                     time_total, time_current, time_remaining, time_pct,
                     time_next_reset, time_details)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     datetime.now().isoformat(timespec="seconds"),
                     usage.level,
                     usage.tokens_pct,
                     usage.tokens_next_reset,
+                    usage.tokens_weekly_pct,
+                    usage.tokens_weekly_reset,
+                    usage.tokens_5h_pct,
+                    usage.tokens_5h_reset,
                     usage.time_total,
                     usage.time_current,
                     usage.time_remaining,

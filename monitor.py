@@ -61,7 +61,8 @@ class Monitor:
             self.alerter.reset_auth()  # 凭证恢复，重置失效告警
             self.storage.insert(usage)
             self.trend_data = self.storage.query_trend(self.trend_window)
-            self.alerter.check("tokens", usage.tokens_pct)
+            self.alerter.check("tokens_weekly", usage.tokens_weekly_pct)
+            self.alerter.check("tokens_5h", usage.tokens_5h_pct)
             self.alerter.check("time", usage.time_pct)
         else:
             self.consecutive_failures += 1

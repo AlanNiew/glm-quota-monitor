@@ -36,10 +36,11 @@ class Dashboard:
         if not state.ok:
             fails = self.monitor.consecutive_failures
             return f"GLM 监控 · 请求失败({fails}次)"
-        t = f"{state.tokens_pct}%" if state.tokens_pct is not None else "—"
+        w = f"{state.tokens_weekly_pct}%" if state.tokens_weekly_pct is not None else "—"
+        h = f"{state.tokens_5h_pct}%" if state.tokens_5h_pct is not None else "—"
         c = f"{state.time_pct}%" if state.time_pct is not None else "—"
         lvl = f"[{state.level}]" if state.level else ""
-        return f"GLM {lvl} Token {t} | 调用 {c}"
+        return f"GLM {lvl} 周{w} 5小时{h} | 调用 {c}"
 
     def _fmt_reset(self, ms):
         """毫秒时间戳转可读时间。"""
@@ -165,9 +166,11 @@ class Dashboard:
             )
             return Panel(qtable, title="配额", border_style="blue")
 
-        # Token 用量配额
-        qtable.add_row("Token 用量", self._bar(state.tokens_pct))
-        qtable.add_row("  重置于", self._fmt_reset(state.tokens_next_reset))
+        # Token 用量配额：分两条展示（每周 / 5 小时滚动窗口）
+        qtable.add_row("Token（每周）", self._bar(state.tokens_weekly_pct))
+        qtable.add_row("  重置于", self._fmt_reset(state.tokens_weekly_reset))
+        qtable.add_row("Token（5小时）", self._bar(state.tokens_5h_pct))
+        qtable.add_row("  重置于", self._fmt_reset(state.tokens_5h_reset))
         qtable.add_row("", "")
         # 调用次数配额
         qtable.add_row("调用次数", self._bar(state.time_pct))
