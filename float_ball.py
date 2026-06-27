@@ -7,6 +7,7 @@ QTimer 每秒触发重绘读取最新状态。
 交互：左键拖动移动，右键弹出退出菜单，鼠标悬停显示用量明细 Tooltip。
 """
 import sys
+import queue
 import threading
 from datetime import datetime
 
@@ -73,8 +74,8 @@ class FloatBall:
             self._widget = _BallWidget(self._monitor)
             self._app.exec()
         except Exception:
-            import traceback
-            traceback.print_exc()
+            from logger import get
+            get().exception("悬浮球启动失败")
 
     def start(self):
         """兼容接口：在子线程运行（不推荐，Qt 要求主线程）。"""
@@ -85,6 +86,14 @@ class FloatBall:
         """关闭悬浮球（线程安全，可跨线程调用）。"""
         if self._app is not None:
             self._app.quit()
+
+    def toggle_visible(self):
+        """切换悬浮球显隐（线程安全，通过动作队列投递到 Qt 主线程）。"""
+        if self._widget is None:
+            return
+        self._widget._actions.put(
+            lambda: self._widget.hide() if self._widget.isVisible() else self._widget.show()
+        )
 
 
 class _BallWidget(QWidget):
@@ -123,6 +132,12 @@ class _BallWidget(QWidget):
         self._tooltip_delay.setSingleShot(True)
         self._tooltip_delay.timeout.connect(self._show_tooltip)
         self._tooltip_text = ""
+
+        # 跨线程动作队列：托盘菜单（pystray 线程）投递的动作由主线程定时器消费
+        self._actions = queue.Queue()
+        self._action_timer = QTimer(self)
+        self._action_timer.timeout.connect(self._process_actions)
+        self._action_timer.start(100)
 
         self.show()
 
@@ -178,6 +193,15 @@ class _BallWidget(QWidget):
         if not self.underMouse():
             return
         QToolTip.showText(QCursor.pos(), self._tooltip_text, self)
+
+    def _process_actions(self):
+        """主线程消费跨线程投递的动作（show/hide 等）。"""
+        while not self._actions.empty():
+            try:
+                action = self._actions.get_nowait()
+                action()
+            except Exception:
+                pass
 
     def _check_stop(self):
         """检测 monitor 的 stop_event，同步退出 QApplication。"""
