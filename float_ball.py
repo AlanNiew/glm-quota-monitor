@@ -11,7 +11,7 @@ import queue
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
+from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QPoint, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRadialGradient, QBrush, QCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -100,6 +100,8 @@ class _BallWidget(QWidget):
     """悬浮球窗口：无边框、透明背景、置顶、环形进度条。"""
 
     SIZE = 72
+    EDGE_THRESHOLD = 12   # 距屏幕边缘多少像素内（拖动结束时）触发吸附
+    EDGE_REVEAL = 4       # 收缩后露出的像素，鼠标移入即展开
 
     def __init__(self, monitor):
         super().__init__()
@@ -132,6 +134,12 @@ class _BallWidget(QWidget):
         self._tooltip_delay.setSingleShot(True)
         self._tooltip_delay.timeout.connect(self._show_tooltip)
         self._tooltip_text = ""
+
+        # 边缘吸附：拖到屏幕左右边缘自动收缩，鼠标移近展开
+        self._docked_side = None     # None / "left" / "right"
+        self._float_pos = None       # 吸附前的展开位置
+        self._anim = None            # 位移动画
+        self._expanding = False      # 是否因 hover 展开中（leave 时据此收缩）
 
         # 跨线程动作队列：托盘菜单（pystray 线程）投递的动作由主线程定时器消费
         self._actions = queue.Queue()
@@ -180,19 +188,77 @@ class _BallWidget(QWidget):
         return "\n".join(lines)
 
     def enterEvent(self, _event):
-        """鼠标进入：启动短延迟定时器，绕过系统默认悬停超时。"""
+        """鼠标进入：启动 tooltip 延迟 + 吸附状态展开。"""
         self._tooltip_delay.start(500)
+        if self._docked_side is not None and not self._expanding:
+            self._expand()
 
     def leaveEvent(self, _event):
-        """鼠标离开：取消挂起的显示并隐藏 Tooltip。"""
+        """鼠标离开：取消 tooltip + 吸附状态收缩。"""
         self._tooltip_delay.stop()
         QToolTip.hideText()
+        if self._docked_side is not None and self._expanding:
+            self._collapse()
 
     def _show_tooltip(self):
         """定时器触发：立即在鼠标位置弹出 Tooltip。"""
         if not self.underMouse():
             return
         QToolTip.showText(QCursor.pos(), self._tooltip_text, self)
+
+    # —— 边缘吸附 ——
+
+    def _animate_to(self, pos, duration=200):
+        """平滑移动到目标位置。"""
+        if self._anim is not None:
+            self._anim.stop()
+        self._anim = QPropertyAnimation(self, b"pos", self)
+        self._anim.setDuration(duration)
+        self._anim.setStartValue(self.pos())
+        self._anim.setEndValue(pos)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.start()
+
+    def _check_dock(self):
+        """拖动结束时检测是否吸附到左右边缘。"""
+        p = self.pos()
+        screen = QApplication.primaryScreen().geometry()
+        if p.x() <= self.EDGE_THRESHOLD:
+            self._dock("left", p)
+        elif p.x() + self.SIZE >= screen.width() - self.EDGE_THRESHOLD:
+            self._dock("right", p)
+        else:
+            self._docked_side = None
+
+    def _hidden_pos(self, side, y):
+        """计算收缩目标位置（屏外，留 EDGE_REVEAL 像素）。"""
+        screen = QApplication.primaryScreen().geometry()
+        if side == "left":
+            return QPoint(-(self.SIZE - self.EDGE_REVEAL), y)
+        return QPoint(screen.width() - self.EDGE_REVEAL, y)
+
+    def _dock(self, side, float_pos):
+        """吸附到指定边：记录展开位置并收缩到屏外。"""
+        self._docked_side = side
+        self._float_pos = QPoint(float_pos.x(), float_pos.y())
+        self._expanding = False
+        self._animate_to(self._hidden_pos(side, float_pos.y()))
+
+    def _expand(self):
+        """从吸附状态展开回可见位置。"""
+        if self._float_pos is None:
+            return
+        self._expanding = True
+        self._animate_to(self._float_pos)
+
+    def _collapse(self):
+        """从展开状态收缩回吸附位置。"""
+        side = self._docked_side
+        if side is None:
+            return
+        self._expanding = False
+        y = self._float_pos.y() if self._float_pos else self.pos().y()
+        self._animate_to(self._hidden_pos(side, y))
 
     def _process_actions(self):
         """主线程消费跨线程投递的动作（show/hide 等）。"""
@@ -201,7 +267,8 @@ class _BallWidget(QWidget):
                 action = self._actions.get_nowait()
                 action()
             except Exception:
-                pass
+                from logger import get
+                get().exception("跨线程动作执行失败")
 
     def _check_stop(self):
         """检测 monitor 的 stop_event，同步退出 QApplication。"""
@@ -290,6 +357,12 @@ class _BallWidget(QWidget):
     # —— 鼠标交互 ——
 
     def mousePressEvent(self, event):
+        # 拖动开始：取消吸附，让用户能把球拖走
+        if self._docked_side is not None:
+            self._docked_side = None
+            self._expanding = False
+            if self._anim is not None:
+                self._anim.stop()
         if event.button() == Qt.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.pos()
 
@@ -299,6 +372,7 @@ class _BallWidget(QWidget):
 
     def mouseReleaseEvent(self, _event):
         self._drag_offset = None
+        self._check_dock()  # 拖动结束检测边缘吸附
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
